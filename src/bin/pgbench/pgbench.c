@@ -5236,8 +5236,6 @@ initGenerateDataServerSide(PGconn *con)
 						  "insert into pgbench_branches(bid,bbalance) "
 						  "select bid + 1, 0 "
 						  "from generate_series(%d, %d) as bid", i, i + 1);
-						  //"select bid, 0 "
-						  //"from generate_series(1, %d) as bid", nbranches * scale);
 		executeStatement(con, sql.data);
 
 		printfPQExpBuffer(&sql,
@@ -5245,8 +5243,6 @@ initGenerateDataServerSide(PGconn *con)
 						  "select tid + 1, tid / %d + 1, 0 "
 						  "from generate_series(%d, %d) as tid",
 						  ntellers, i * ntellers, (i + 1) * ntellers - 1);
-						  //"select tid, (tid - 1) / %d + 1, 0 "
-						  //"from generate_series(1, %d) as tid", ntellers, ntellers * scale);
 		executeStatement(con, sql.data);
 
 		printfPQExpBuffer(&sql,
@@ -5254,9 +5250,6 @@ initGenerateDataServerSide(PGconn *con)
 						  "select aid + 1, aid / %d + 1, 0, '' "
 						  "from generate_series(" INT64_FORMAT ", " INT64_FORMAT ") as aid",
 						  naccounts, (int64) i * naccounts, (int64) (i + 1) * naccounts - 1);
-						  //"select aid, (aid - 1) / %d + 1, 0, '' "
-						  //"from generate_series(1, " INT64_FORMAT ") as aid",
-						  //naccounts, (int64) naccounts * scale);
 		executeStatement(con, sql.data);
 
 		executeStatement(con, "commit");
