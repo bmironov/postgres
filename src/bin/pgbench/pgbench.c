@@ -182,6 +182,12 @@ static int64 end_time = 0;		/* when to stop in micro seconds, under -T */
 static int	scale = 1;
 
 /*
+ * scaling factor after which we switch to multiple transactions during
+ * data population phase on server side
+ */
+static int64	single_txn_scale_limit = 1;
+
+/*
  * fillfactor. for example, fillfactor = 90 will use only 90 percent
  * space during inserts and leave 10 percent free.
  */
@@ -5213,6 +5219,7 @@ static void
 initGenerateDataServerSide(PGconn *con)
 {
 	PQExpBufferData sql;
+	int				chunk = (scale >= single_txn_scale_limit) ? 1 : scale;
 
 	fprintf(stderr, "generating data (server-side)...\n");
 
@@ -5225,30 +5232,44 @@ initGenerateDataServerSide(PGconn *con)
 	/* truncate away any old data */
 	initTruncateTables(con);
 
+	executeStatement(con, "commit");
+
 	initPQExpBuffer(&sql);
 
-	printfPQExpBuffer(&sql,
-					  "insert into pgbench_branches(bid,bbalance) "
-					  "select bid, 0 "
-					  "from generate_series(1, %d) as bid", nbranches * scale);
-	executeStatement(con, sql.data);
+	for (int i = 0; i < scale; i += chunk) {
+		executeStatement(con, "begin");
 
-	printfPQExpBuffer(&sql,
-					  "insert into pgbench_tellers(tid,bid,tbalance) "
-					  "select tid, (tid - 1) / %d + 1, 0 "
-					  "from generate_series(1, %d) as tid", ntellers, ntellers * scale);
-	executeStatement(con, sql.data);
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_branches(bid,bbalance) "
+						  "select bid + 1, 0 "
+						  "from generate_series(%d, %d) as bid", i, i + chunk);
+						  //"select bid, 0 "
+						  //"from generate_series(1, %d) as bid", nbranches * scale);
+		executeStatement(con, sql.data);
 
-	printfPQExpBuffer(&sql,
-					  "insert into pgbench_accounts(aid,bid,abalance,filler) "
-					  "select aid, (aid - 1) / %d + 1, 0, '' "
-					  "from generate_series(1, " INT64_FORMAT ") as aid",
-					  naccounts, (int64) naccounts * scale);
-	executeStatement(con, sql.data);
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_tellers(tid,bid,tbalance) "
+						  "select tid + 1, tid / %d + 1, 0 "
+						  "from generate_series(%d, %d) as tid",
+						  ntellers, i * ntellers, (i + chunk) * ntellers - 1);
+						  //"select tid, (tid - 1) / %d + 1, 0 "
+						  //"from generate_series(1, %d) as tid", ntellers, ntellers * scale);
+		executeStatement(con, sql.data);
+
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_accounts(aid,bid,abalance,filler) "
+						  "select aid + 1, aid / %d + 1, 0, '' "
+						  "from generate_series(" INT64_FORMAT ", " INT64_FORMAT ") as aid",
+						  naccounts, (int64) i * naccounts, (int64) (i + chunk) * naccounts - 1);
+						  //"select aid, (aid - 1) / %d + 1, 0, '' "
+						  //"from generate_series(1, " INT64_FORMAT ") as aid",
+						  //naccounts, (int64) naccounts * scale);
+		executeStatement(con, sql.data);
+
+		executeStatement(con, "commit");
+	}
 
 	termPQExpBuffer(&sql);
-
-	executeStatement(con, "commit");
 }
 
 /*
