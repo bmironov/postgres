@@ -5241,7 +5241,8 @@ generateDataInsertSingleTXN(PGconn *con)
 	printfPQExpBuffer(&sql,
 					  "insert into pgbench_branches(bid, bbalance) "
 					  "select bid, 0 "
-					  "from generate_series(1, %d)", scale * nbranches);
+					  "from generate_series(1, %d) as bid",
+					  scale * nbranches);
 	executeStatement(con, sql.data);
 
 	printfPQExpBuffer(&sql,
