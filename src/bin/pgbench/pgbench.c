@@ -161,7 +161,7 @@ typedef struct socket_set
  * some configurable parameters */
 
 #define DEFAULT_INIT_STEPS "dtgvp"	/* default -I setting */
-#define ALL_INIT_STEPS "dtgGvpf"	/* all possible steps */
+#define ALL_INIT_STEPS "dtgGiIvpf"	/* all possible steps */
 
 #define LOG_STEP_SECONDS	5	/* seconds between log messages */
 #define DEFAULT_NXACTS	10		/* default nxacts */
@@ -170,6 +170,12 @@ typedef struct socket_set
 
 #define MIN_ZIPFIAN_PARAM		1.001	/* minimum parameter for zipfian */
 #define MAX_ZIPFIAN_PARAM		1000.0	/* maximum parameter for zipfian */
+
+/* original single transaction server-side method */
+#define GEN_TYPE_INSERT_ORIGINAL	'G'	/* use INSERT .. SELECT generate_series to generate data */
+/* 'one transaction per scale' server-side methods */
+#define GEN_TYPE_INSERT_SERIES		'i'	/* use INSERT .. SELECT generate_series to generate data */
+#define GEN_TYPE_INSERT_UNNEST  	'I'	/* use INSERT .. SELECT unnest to generate data */
 
 static int	nxacts = 0;			/* number of transactions per client */
 static int	duration = 0;		/* duration in seconds */
@@ -180,6 +186,11 @@ static int64 end_time = 0;		/* when to stop in micro seconds, under -T */
  * pgbench_accounts table.
  */
 static int	scale = 1;
+
+/*
+ *
+ */
+static char	data_generation_type = '?';
 
 /*
  * fillfactor. for example, fillfactor = 90 will use only 90 percent
@@ -914,7 +925,9 @@ usage(void)
 		   "                           d: drop any existing pgbench tables\n"
 		   "                           t: create the tables used by the standard pgbench scenario\n"
 		   "                           g: generate data, client-side\n"
-		   "                           G: generate data, server-side\n"
+		   "                           G: generate data, server-side in single transaction\n"
+		   "                           i:   server-side (multiple TXNs) INSERT .. SELECT generate_series\n"
+		   "                           I:   server-side (multiple TXNs) INSERT .. SELECT unnest\n"
 		   "                           v: invoke VACUUM on the standard tables\n"
 		   "                           p: create primary key indexes on the standard tables\n"
 		   "                           f: create foreign keys between the standard tables\n"
@@ -5203,18 +5216,16 @@ initGenerateDataClientSide(PGconn *con)
 }
 
 /*
- * Fill the standard tables with some data generated on the server
- *
- * As already the case with the client-side data generation, the filler
- * column defaults to NULL in pgbench_branches and pgbench_tellers,
- * and is a blank-padded string in pgbench_accounts.
+ * Generating data via INSERT .. SELECT .. FROM generate_series
+ * whole dataset in single transaction
  */
 static void
-initGenerateDataServerSide(PGconn *con)
+generateDataInsertSingleTXN(PGconn *con)
 {
 	PQExpBufferData sql;
 
-	fprintf(stderr, "generating data (server-side)...\n");
+	fprintf(stderr, "via INSERT .. SELECT generate_series... in single TXN\n");
+
 
 	/*
 	 * we do all of this in one transaction to enable the backend's
@@ -5225,37 +5236,168 @@ initGenerateDataServerSide(PGconn *con)
 	/* truncate away any old data */
 	initTruncateTables(con);
 
+	initPQExpBuffer(&sql);
+
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_branches(bid, bbalance) "
+					  "select bid, 0 "
+					  "from generate_series(1, %d)", scale * nbranches);
+	executeStatement(con, sql.data);
+
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_tellers(tid, bid, tbalance) "
+					  "select tid + 1, tid / %d + 1, 0 "
+					  "from generate_series(0, %d) as tid",
+					  ntellers, (scale * ntellers) - 1);
+	executeStatement(con, sql.data);
+
+	printfPQExpBuffer(&sql,
+					  "insert into pgbench_accounts(aid, bid, abalance, "
+								   "filler) "
+					  "select aid + 1, aid / %d + 1, 0, '' "
+					  "from generate_series(0, " INT64_FORMAT ") as aid",
+					  naccounts, (int64) (scale * naccounts) - 1);
+	executeStatement(con, sql.data);
+
 	executeStatement(con, "commit");
+
+	termPQExpBuffer(&sql);
+}
+
+
+/*
+ * Generating data via INSERT .. SELECT .. FROM generate_series
+ * One transaction per 'scale'
+ */
+static void
+generateDataInsertSeries(PGconn *con)
+{
+	PQExpBufferData sql;
+
+	fprintf(stderr, "via INSERT .. SELECT generate_series... in multiple TXN(s)\n");
 
 	initPQExpBuffer(&sql);
 
-	for (int i = 0; i < scale; i++) {
+	executeStatement(con, "begin");
+
+	/* truncate away any old data */
+	initTruncateTables(con);
+
+	executeStatement(con, "commit");
+
+	for (int i = 0; i < scale; i++)
+	{
 		executeStatement(con, "begin");
 
 		printfPQExpBuffer(&sql,
-						  "insert into pgbench_branches(bid,bbalance) "
-						  "select bid + 1, 0 "
-						  "from generate_series(%d, %d) as bid", i, i + 1);
+						  "insert into pgbench_branches(bid, bbalance) "
+						  "values(%d, 0)", i + 1);
 		executeStatement(con, sql.data);
 
 		printfPQExpBuffer(&sql,
-						  "insert into pgbench_tellers(tid,bid,tbalance) "
+						  "insert into pgbench_tellers(tid, bid, tbalance) "
 						  "select tid + 1, tid / %d + 1, 0 "
 						  "from generate_series(%d, %d) as tid",
 						  ntellers, i * ntellers, (i + 1) * ntellers - 1);
 		executeStatement(con, sql.data);
 
 		printfPQExpBuffer(&sql,
-						  "insert into pgbench_accounts(aid,bid,abalance,filler) "
+						  "insert into pgbench_accounts(aid, bid, abalance, "
+									   "filler) "
 						  "select aid + 1, aid / %d + 1, 0, '' "
-						  "from generate_series(" INT64_FORMAT ", " INT64_FORMAT ") as aid",
-						  naccounts, (int64) i * naccounts, (int64) (i + 1) * naccounts - 1);
+						  "from generate_series(" INT64_FORMAT ", "
+								INT64_FORMAT ") as aid",
+						  naccounts, (int64) i * naccounts,
+						  (int64) (i + 1) * naccounts - 1);
 		executeStatement(con, sql.data);
 
 		executeStatement(con, "commit");
 	}
 
 	termPQExpBuffer(&sql);
+}
+
+/*
+ * Generating data via INSERT .. SELECT .. FROM unnest
+ * One transaction per 'scale'
+ */
+static void
+generateDataInsertUnnest(PGconn *con)
+{
+	PQExpBufferData sql;
+
+	fprintf(stderr, "via INSERT .. SELECT unnest...\n");
+
+	initPQExpBuffer(&sql);
+
+	executeStatement(con, "begin");
+
+	/* truncate away any old data */
+	initTruncateTables(con);
+
+	executeStatement(con, "commit");
+
+	for (int s = 0; s < scale; s++)
+	{
+		executeStatement(con, "begin");
+
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_branches(bid,bbalance) "
+						  "values(%d, 0)", s + 1);
+		executeStatement(con, sql.data);
+
+		printfPQExpBuffer(&sql,
+						  "insert into pgbench_tellers(tid, bid, tbalance) "
+						  "select unnest(array_agg(s.i order by s.i)) as tid, "
+								  "%d as bid, 0 as tbalance "
+						  "from generate_series(%d, %d) as s(i)",
+						  s + 1, s * ntellers + 1, (s + 1) * ntellers);
+		executeStatement(con, sql.data);
+
+		printfPQExpBuffer(&sql,
+						  "with data as ("
+						  "   select generate_series(" INT64_FORMAT ", "
+							  INT64_FORMAT ") as i) "
+						  "insert into pgbench_accounts(aid, bid, "
+									  "abalance, filler) "
+						  "select unnest(aid), unnest(bid), 0 as abalance, "
+								  "'' as filler "
+						  "from (select array_agg(i+1) aid, "
+									   "array_agg(i/%d + 1) bid from data)",
+						  (int64) s * naccounts + 1,
+						  (int64) (s + 1) * naccounts, naccounts);
+		executeStatement(con, sql.data);
+
+		executeStatement(con, "commit");
+	}
+
+	termPQExpBuffer(&sql);
+}
+
+/*
+ * Fill the standard tables with some data generated on the server
+ *
+ * As already the case with the client-side data generation, the filler
+ * column defaults to NULL in pgbench_branches and pgbench_tellers,
+ * and is a blank-padded string in pgbench_accounts.
+ */
+static void
+initGenerateDataServerSide(PGconn *con)
+{
+	fprintf(stderr, "generating data (server-side) ");
+
+	switch (data_generation_type)
+	{
+		case GEN_TYPE_INSERT_ORIGINAL:
+			generateDataInsertSingleTXN(con);
+			break;
+		case GEN_TYPE_INSERT_SERIES:
+			generateDataInsertSeries(con);
+			break;
+		case GEN_TYPE_INSERT_UNNEST:
+			generateDataInsertUnnest(con);
+			break;
+	}
 }
 
 /*
@@ -5341,6 +5483,8 @@ initCreateFKeys(PGconn *con)
 static void
 checkInitSteps(const char *initialize_steps)
 {
+	char	data_init_type = 0;
+
 	if (initialize_steps[0] == '\0')
 		pg_fatal("no initialization steps specified");
 
@@ -5352,7 +5496,26 @@ checkInitSteps(const char *initialize_steps)
 			pg_log_error_detail("Allowed step characters are: \"" ALL_INIT_STEPS "\".");
 			exit(1);
 		}
+
+		switch (*step)
+		{
+			case 'G':
+				data_init_type++;
+				data_generation_type = *step;
+				break;
+			case 'i':
+				data_init_type++;
+				data_generation_type = *step;
+				break;
+			case 'I':
+				data_init_type++;
+				data_generation_type = *step;
+				break;
+		}
 	}
+
+	if (data_init_type > 1)
+		pg_log_error("WARNING! More than one type of server-side data generation is requested");
 }
 
 /*
@@ -5395,6 +5558,8 @@ runInitSteps(const char *initialize_steps)
 				initGenerateDataClientSide(con);
 				break;
 			case 'G':
+			case 'i':
+			case 'I':
 				op = "server-side generate";
 				initGenerateDataServerSide(con);
 				break;
