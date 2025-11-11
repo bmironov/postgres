@@ -161,7 +161,7 @@ typedef struct socket_set
  * some configurable parameters */
 
 #define DEFAULT_INIT_STEPS "dtgvp"	/* default -I setting */
-#define ALL_INIT_STEPS "dtgGiIvpf"	/* all possible steps */
+#define ALL_INIT_STEPS "dtgCGiIvpf"	/* all possible steps */
 
 #define LOG_STEP_SECONDS	5	/* seconds between log messages */
 #define DEFAULT_NXACTS	10		/* default nxacts */
@@ -176,6 +176,8 @@ typedef struct socket_set
 /* 'one transaction per scale' server-side methods */
 #define GEN_TYPE_INSERT_SERIES		'i'	/* use INSERT .. SELECT generate_series to generate data */
 #define GEN_TYPE_INSERT_UNNEST  	'I'	/* use INSERT .. SELECT unnest to generate data */
+#define GEN_TYPE_COPY_ORIGINAL		'g' /* use COPY .. FROM STDIN .. TEXT to generate data */
+#define GEN_TYPE_COPY_BINARY		'C' /* use COPY .. FROM STDIN .. BINARY to generate data */
 
 static int	nxacts = 0;			/* number of transactions per client */
 static int	duration = 0;		/* duration in seconds */
@@ -188,9 +190,16 @@ static int64 end_time = 0;		/* when to stop in micro seconds, under -T */
 static int	scale = 1;
 
 /*
- *
+ * mode of data generation to use
  */
 static char	data_generation_type = '?';
+
+/*
+ * COPY FROM BINARY execution buffer
+ */
+#define BIN_COPY_BUF_SIZE	102400				/* maximum buffer size for COPY FROM BINARY */
+static char		*bin_copy_buffer = NULL;		/* buffer for COPY FROM BINARY */
+static int32_t	 bin_copy_buffer_length = 0;	/* current buffer size */
 
 /*
  * fillfactor. for example, fillfactor = 90 will use only 90 percent
@@ -861,7 +870,8 @@ static int	wait_on_socket_set(socket_set *sa, int64 usecs);
 static bool socket_has_input(socket_set *sa, int fd, int idx);
 
 /* callback used to build rows for COPY during data loading */
-typedef void (*initRowMethod) (PQExpBufferData *sql, int64 curr);
+typedef void (*initRowMethod)		(PQExpBufferData *sql, int64 curr);
+typedef void (*initRowMethodBin)	(PGconn *con, PGresult *res, int64_t curr, int32_t parent);
 
 /* callback functions for our flex lexer */
 static const PsqlScanCallbacks pgbench_callbacks = {
@@ -925,6 +935,7 @@ usage(void)
 		   "                           d: drop any existing pgbench tables\n"
 		   "                           t: create the tables used by the standard pgbench scenario\n"
 		   "                           g: generate data, client-side\n"
+		   "                           C:   client-side (single TNX) COPY .. FROM STDIN .. BINARY\n"
 		   "                           G: generate data, server-side in single transaction\n"
 		   "                           i:   server-side (multiple TXNs) INSERT .. SELECT generate_series\n"
 		   "                           I:   server-side (multiple TXNs) INSERT .. SELECT unnest\n"
@@ -5191,9 +5202,9 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
  * a blank-padded string in pgbench_accounts.
  */
 static void
-initGenerateDataClientSide(PGconn *con)
+initGenerateDataClientSideText(PGconn *con)
 {
-	fprintf(stderr, "generating data (client-side)...\n");
+	fprintf(stderr, "TEXT mode...\n");
 
 	/*
 	 * we do all of this in one transaction to enable the backend's
@@ -5209,10 +5220,371 @@ initGenerateDataClientSide(PGconn *con)
 	 * already exist
 	 */
 	initPopulateTable(con, "pgbench_branches", nbranches, initBranch);
-	initPopulateTable(con, "pgbench_tellers", ntellers, initTeller);
+	initPopulateTable(con, "pgbench_tellers",  ntellers,  initTeller);
 	initPopulateTable(con, "pgbench_accounts", naccounts, initAccount);
 
 	executeStatement(con, "commit");
+}
+
+
+/*
+ * Dumps binary buffer to file (purely for debugging)
+ */
+static void
+dumpBufferToFile(char *filename)
+{
+	FILE *file_ptr;
+	size_t bytes_written;
+
+	file_ptr = fopen(filename, "wb");
+	if (file_ptr == NULL)
+	{
+		fprintf(stderr, "Error opening file %s\n", filename);
+		return; // EXIT_FAILURE;
+	}
+
+	bytes_written = fwrite(bin_copy_buffer, 1, bin_copy_buffer_length, file_ptr);
+
+	if (bytes_written != bin_copy_buffer_length)
+	{
+		fprintf(stderr, "Error writing to file or incomplete write\n");
+		fclose(file_ptr);
+		return; // EXIT_FAILURE;
+	}
+
+	fclose(file_ptr);
+}
+
+/*
+ * Save char data to buffer
+ */
+static void
+bufferCharData(char *src, int32_t len)
+{
+	memcpy((char *) bin_copy_buffer + bin_copy_buffer_length, (char *) src, len);
+	bin_copy_buffer_length += len;
+}
+
+/*
+ * Converts platform byte order into network byte order
+ * SPARC doesn't reqire that
+ */
+static void
+bufferData(void *src, int32_t len)
+{
+#ifdef __sparc__
+	bufferCharData(src, len);
+#else
+	if (len == 1)
+		bufferCharData(src, len);
+	else
+		for (int32_t i = 0; i < len; i++)
+		{
+			((char *) bin_copy_buffer + bin_copy_buffer_length)[i] =
+				((char *) src)[len - i - 1];
+		}
+
+	bin_copy_buffer_length += len;
+#endif
+}
+
+/*
+ * adds column counter
+ */
+static void
+addColumnCounter(int16_t n)
+{
+	bufferData((void *) &n, sizeof(n));
+}
+
+/*
+ * adds column with NULL value
+ */
+static void
+addNullColumn()
+{
+	int32_t null = -1;
+	bufferData((void *) &null, sizeof(null));
+}
+
+/*
+ * adds column with int8 value
+ */
+static void
+addInt8Column(int8_t value)
+{
+	int8_t	data = value;
+	int32_t	size = sizeof(data);
+	bufferData((void *) &size, sizeof(size));
+	bufferData((void *) &data, sizeof(data));
+}
+
+/*
+ * adds column with int16 value
+ */
+static void
+addInt16Column(int16_t value)
+{
+	int16_t	data = value;
+	int32_t	size = sizeof(data);
+	bufferData((void *) &size, sizeof(size));
+	bufferData((void *) &data, sizeof(data));
+}
+
+/*
+ * adds column with inti32 value
+ */
+static void
+addInt32Column(int32_t value)
+{
+	int32_t	data = value;
+	int32_t	size = sizeof(data);
+	bufferData((void *) &size, sizeof(size));
+	bufferData((void *) &data, sizeof(data));
+}
+
+/*
+ * adds column with inti64 value
+ */
+static void
+addInt64Column(int64_t value)
+{
+	int64_t	data = value;
+	int32_t	size = sizeof(data);
+	bufferData((void *) &size, sizeof(size));
+	bufferData((void *) &data, sizeof(data));
+}
+
+/*
+ * adds column with char value
+ */
+static void
+addCharColumn(char *value)
+{
+	int32_t	size = strlen(value);
+	bufferData((void *) &size, sizeof(size));
+	bufferCharData(value, size);
+}
+
+/*
+ * Starts communication with server for COPY FROM BINARY statement
+ */
+static void
+sendBinaryCopyHeader(PGconn *con)
+{
+	char header[] = {'P','G','C','O','P','Y','\n','\377','\r','\n','\0',
+					 '\0','\0','\0','\0',
+					 '\0','\0','\0','\0' };
+
+	PQputCopyData(con, header, 19);
+}
+
+/*
+ * Finishes communication with server for COPY FROM BINARY statement
+ */
+static void
+sendBinaryCopyTrailer(PGconn *con)
+{
+	static char trailer[] = { 0xFF, 0xFF };
+
+	PQputCopyData(con, trailer, 2);
+}
+
+/*
+ * Flashes current buffer over network if needed
+ */
+static void
+flushBuffer(PGconn *con, PGresult *res, int16_t row_len)
+{
+	if (bin_copy_buffer_length + row_len > BIN_COPY_BUF_SIZE)
+	{
+		/* flush current buffer */
+		if (PQresultStatus(res) == PGRES_COPY_IN)
+			PQputCopyData(con, (char *) bin_copy_buffer, bin_copy_buffer_length);
+		bin_copy_buffer_length = 0;
+	}
+}
+
+/*
+ * Sends current branch row to buffer
+ */
+static void
+initBranchBinary(PGconn *con, PGresult *res, int64_t curr, int32_t parent)
+{
+	/*
+	 * Each row has following extra bytes:
+	 * - 2 bytes for number of columns
+	 * - 4 bytes as length for each column
+	 */
+	int16_t	max_row_len =  35 + 2 + 4*3; /* max row size is 32 */
+
+	flushBuffer(con, res, max_row_len);
+
+	addColumnCounter(2);
+
+	addInt32Column(curr + 1);
+	addInt32Column(0);
+}
+
+/*
+ * Sends current teller row to buffer
+ */
+static void
+initTellerBinary(PGconn *con, PGresult *res, int64_t curr, int32_t parent)
+{
+	/*
+	 * Each row has following extra bytes:
+	 * - 2 bytes for number of columns
+	 * - 4 bytes as length for each column
+	 */
+	int16_t	max_row_len =  40 + 2 + 4*4; /* max row size is 40 */
+
+	flushBuffer(con, res, max_row_len);
+
+	addColumnCounter(3);
+
+	addInt32Column(curr + 1);
+	addInt32Column(curr / parent + 1);
+	addInt32Column(0);
+}
+
+/*
+ * Sends current account row to buffer
+ */
+static void
+initAccountBinary(PGconn *con, PGresult *res, int64_t curr, int32_t parent)
+{
+	/*
+	 * Each row has following extra bytes:
+	 * - 2 bytes for number of columns
+	 * - 4 bytes as length for each column
+	 */
+	int16_t	max_row_len = 250 + 2 + 4*4; /* max row size is 250 for int64 */
+
+	flushBuffer(con, res, max_row_len);
+
+	addColumnCounter(3);
+
+	if (scale <= SCALE_32BIT_THRESHOLD)
+		addInt32Column(curr + 1);
+	else
+		addInt64Column(curr);
+
+	addInt32Column(curr / parent + 1);
+	addInt32Column(0);
+}
+
+/*
+ * Universal wrapper for sending data in binary format
+ */
+static void
+initPopulateTableBinary(PGconn *con, char *table, char *columns,
+						int64_t base, initRowMethodBin init_row)
+{
+	int			 n;
+	PGresult	*res;
+	char		 copy_statement[256];
+	const char	*copy_statement_fmt = "copy %s (%s) from stdin (format binary)";
+	int64_t		 total = base * scale;
+
+	bin_copy_buffer_length = 0;
+
+	/* Use COPY with FREEZE on v14 and later for all ordinary tables */
+	if ((PQserverVersion(con) >= 140000) &&
+		get_table_relkind(con, table) == RELKIND_RELATION)
+		copy_statement_fmt = "copy %s (%s) from stdin with (format binary, freeze on)";
+
+	n = pg_snprintf(copy_statement, sizeof(copy_statement), copy_statement_fmt, table, columns);
+	if (n >= sizeof(copy_statement))
+		pg_fatal("invalid buffer size: must be at least %d characters long", n);
+	else if (n == -1)
+		pg_fatal("invalid format string");
+
+	res = PQexec(con, copy_statement);
+
+	if (PQresultStatus(res) != PGRES_COPY_IN)
+		pg_fatal("unexpected copy in result: %s", PQerrorMessage(con));
+	PQclear(res);
+
+
+	sendBinaryCopyHeader(con);
+
+	for (int64_t i = 0; i < total; i++)
+	{
+		init_row(con, res, i, base);
+	}
+
+	if (PQresultStatus(res) == PGRES_COPY_IN)
+		PQputCopyData(con, (char *) bin_copy_buffer, bin_copy_buffer_length);
+	else
+		fprintf(stderr, "Unexpected mode %d instead of %d\n", PQresultStatus(res), PGRES_COPY_IN);
+
+	sendBinaryCopyTrailer(con);
+
+	if (PQresultStatus(res) == PGRES_COPY_IN)
+	{
+		if (PQputCopyEnd(con, NULL) == 1) /* success */
+		{
+			res = PQgetResult(con);
+			if (PQresultStatus(res) != PGRES_COMMAND_OK)
+				fprintf(stderr, "Error: %s\n", PQerrorMessage(con));
+			PQclear(res);
+		}
+		else
+			fprintf(stderr, "Error: %s\n", PQerrorMessage(con));
+	}
+}
+
+/*
+ * Wrapper for binary data load
+ */
+static void
+initGenerateDataClientSideBinary(PGconn *con)
+{
+
+	fprintf(stderr, "BINARY mode...\n");
+
+	bin_copy_buffer = pg_malloc(BIN_COPY_BUF_SIZE);
+	bin_copy_buffer_length = 0;
+
+	/*
+	 * we do all of this in one transaction to enable the backend's
+	 * data-loading optimizations
+	 */
+	executeStatement(con, "begin");
+
+	/* truncate away any old data */
+	initTruncateTables(con);
+
+	initPopulateTableBinary(con, "pgbench_branches", "bid, bbalance",
+							nbranches, initBranchBinary);
+	initPopulateTableBinary(con, "pgbench_tellers",  "tid, bid, tbalance",
+							ntellers,  initTellerBinary);
+	initPopulateTableBinary(con, "pgbench_accounts", "aid, bid, abalance",
+							naccounts, initAccountBinary);
+
+	executeStatement(con, "commit");
+
+	pg_free(bin_copy_buffer);
+}
+
+/*
+ * Fill the standard tables with some data generated and sent from the client.
+ */
+static void
+initGenerateDataClientSide(PGconn *con)
+{
+	fprintf(stderr, "generating data (client-side) in ");
+
+	switch (data_generation_type)
+	{
+		case GEN_TYPE_COPY_ORIGINAL:
+			initGenerateDataClientSideText(con);
+			break;
+		case GEN_TYPE_COPY_BINARY:
+			initGenerateDataClientSideBinary(con);
+			break;
+	}
 }
 
 /*
@@ -5500,14 +5872,10 @@ checkInitSteps(const char *initialize_steps)
 
 		switch (*step)
 		{
+			case 'g':
+			case 'C':
 			case 'G':
-				data_init_type++;
-				data_generation_type = *step;
-				break;
 			case 'i':
-				data_init_type++;
-				data_generation_type = *step;
-				break;
 			case 'I':
 				data_init_type++;
 				data_generation_type = *step;
@@ -5555,6 +5923,7 @@ runInitSteps(const char *initialize_steps)
 				initCreateTables(con);
 				break;
 			case 'g':
+			case 'C':
 				op = "client-side generate";
 				initGenerateDataClientSide(con);
 				break;
