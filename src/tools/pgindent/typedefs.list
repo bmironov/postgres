@@ -1649,6 +1649,9 @@ LtreeGistOptions
 LtreeSignature
 MAGIC
 MBuf
+MCVHashContext
+MCVHashEntry
+MCVHashTable_hash
 MCVItem
 MCVList
 MEMORY_BASIC_INFORMATION
@@ -2345,6 +2348,7 @@ ProjectionPath
 PromptInterruptContext
 ProtocolVersion
 PrsStorage
+PruneFreezeParams
 PruneFreezeResult
 PruneReason
 PruneState
@@ -3860,6 +3864,7 @@ pe_test_vector
 pendingPosition
 pending_label
 pgParameterStatus
+pgoff_t
 pg_atomic_flag
 pg_atomic_uint32
 pg_atomic_uint64
