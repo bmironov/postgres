@@ -5496,20 +5496,20 @@ initAccountBinary(PGconn *con, PGresult *res, int64_t curr, int32_t parent)
  */
 static void
 initPopulateTableBinary(PGconn *con, char *table, char *columns,
-						int64_t base, initRowMethodBin init_row)
+						int counter, int64_t base, initRowMethodBin init_row)
 {
 	int			 n;
 	PGresult	*res;
 	char		 copy_statement[256];
 	const char	*copy_statement_fmt = "copy %s (%s) from stdin (format binary)";
-	int64_t		 total = base * scale;
+	int64_t		 start = base * counter;
 
 	bin_copy_buffer_length = 0;
 
 	/* Use COPY with FREEZE on v14 and later for all ordinary tables */
 	if ((PQserverVersion(con) >= 140000) &&
 		get_table_relkind(con, table) == RELKIND_RELATION)
-		copy_statement_fmt = "copy %s (%s) from stdin with (format binary, freeze on)";
+		copy_statement_fmt = "copy %s (%s) from stdin with (format binary)";
 
 	n = pg_snprintf(copy_statement, sizeof(copy_statement), copy_statement_fmt, table, columns);
 	if (n >= sizeof(copy_statement))
@@ -5526,7 +5526,7 @@ initPopulateTableBinary(PGconn *con, char *table, char *columns,
 
 	sendBinaryCopyHeader(con);
 
-	for (int64_t i = 0; i < total; i++)
+	for (int64_t i = start; i < start + base; i++)
 	{
 		init_row(con, res, i, base);
 	}
@@ -5573,14 +5573,19 @@ initGenerateDataClientSideBinary(PGconn *con)
 	/* truncate away any old data */
 	initTruncateTables(con);
 
-	initPopulateTableBinary(con, "pgbench_branches", "bid, bbalance",
-							nbranches, initBranchBinary);
-	initPopulateTableBinary(con, "pgbench_tellers",  "tid, bid, tbalance",
-							ntellers,  initTellerBinary);
-	initPopulateTableBinary(con, "pgbench_accounts", "aid, bid, abalance",
-							naccounts, initAccountBinary);
-
 	executeStatement(con, "commit");
+
+	for (int i = 0; i < scale; i++)
+	{
+		initPopulateTableBinary(con, "pgbench_branches", "bid, bbalance",
+								i, nbranches, initBranchBinary);
+		initPopulateTableBinary(con, "pgbench_tellers",  "tid, bid, tbalance",
+								i, ntellers,  initTellerBinary);
+		initPopulateTableBinary(con, "pgbench_accounts", "aid, bid, abalance",
+								i, naccounts, initAccountBinary);
+
+		executeStatement(con, "commit");
+	}
 
 	pg_free(bin_copy_buffer);
 }
