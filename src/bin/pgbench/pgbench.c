@@ -4985,26 +4985,26 @@ initCreateTables(PGconn *con)
 	static const struct ddlinfo DDLs[] = {
 		{
 			"pgbench_history",
-			"tid int,bid int,aid    int,delta int,mtime timestamp,filler char(22)",
-			"tid int,bid int,aid bigint,delta int,mtime timestamp,filler char(22)",
+			"tid int,bid int,aid    int,delta int,mtime timestamp,filler char(22) default ''",
+			"tid int,bid int,aid bigint,delta int,mtime timestamp,filler char(22) default ''",
 			0
 		},
 		{
 			"pgbench_tellers",
-			"tid int not null,bid int,tbalance int,filler char(84)",
-			"tid int not null,bid int,tbalance int,filler char(84)",
+			"tid int not null,bid int,tbalance int,filler char(84) default ''",
+			"tid int not null,bid int,tbalance int,filler char(84) default ''",
 			1
 		},
 		{
 			"pgbench_accounts",
-			"aid    int not null,bid int,abalance int,filler char(84)",
-			"aid bigint not null,bid int,abalance int,filler char(84)",
+			"aid    int not null,bid int,abalance int,filler char(84) default ''",
+			"aid bigint not null,bid int,abalance int,filler char(84) default ''",
 			1
 		},
 		{
 			"pgbench_branches",
-			"bid int not null,bbalance int,filler char(88)",
-			"bid int not null,bbalance int,filler char(88)",
+			"bid int not null,bbalance int,filler char(88) default ''",
+			"bid int not null,bbalance int,filler char(88) default ''",
 			1
 		}
 	};
