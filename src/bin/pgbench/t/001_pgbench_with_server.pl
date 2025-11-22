@@ -16,25 +16,30 @@ sub check_data_state
 	local $Test::Builder::Level = $Test::Builder::Level + 1;
 	my $node = shift;
 	my $type = shift;
+	my $sql_result;
 
-	my $sql_result = $node->safe_psql('postgres',
-		'SELECT count(*) AS null_count FROM pgbench_accounts WHERE filler IS NULL LIMIT 10;'
-	);
-	is($sql_result, '0',
-		"$type: filler column of pgbench_accounts has no NULL data");
 	$sql_result = $node->safe_psql('postgres',
 		'SELECT count(*) AS null_count FROM pgbench_branches WHERE filler IS NULL;'
 	);
 	is($sql_result, '1',
 		"$type: filler column of pgbench_branches has only NULL data");
+
 	$sql_result = $node->safe_psql('postgres',
 		'SELECT count(*) AS null_count FROM pgbench_tellers WHERE filler IS NULL;'
 	);
 	is($sql_result, '10',
 		"$type: filler column of pgbench_tellers has only NULL data");
+
+	$sql_result = $node->safe_psql('postgres',
+		'SELECT count(*) AS null_count FROM pgbench_accounts WHERE filler IS NULL LIMIT 10;'
+	);
+	is($sql_result, '0',
+		"$type: filler column of pgbench_accounts has no NULL data");
+
 	$sql_result = $node->safe_psql('postgres',
 		'SELECT count(*) AS data_count FROM pgbench_history;');
-	is($sql_result, '0', "$type: pgbench_history has no data");
+	is($sql_result, '0',
+		"$type: pgbench_history has no data");
 }
 
 # start a pgbench specific server
@@ -125,7 +130,7 @@ $node->pgbench(
 	'pgbench scale 1 initialization',);
 
 # Check data state, after client-side data generation.
-check_data_state($node, 'client-side');
+check_data_state($node, 'client-side (default options)');
 
 # Again, with all possible options
 $node->pgbench(
@@ -143,6 +148,7 @@ $node->pgbench(
 		qr{done in \d+\.\d\d s }
 	],
 	'pgbench scale 1 initialization');
+check_data_state($node, 'client-side (all options)');
 
 # Test interaction of --init-steps with legacy step-selection options
 $node->pgbench(
@@ -163,6 +169,38 @@ $node->pgbench(
 
 # Check data state, after server-side data generation.
 check_data_state($node, 'server-side');
+
+# Test server-side generation with UNNEST
+$node->pgbench(
+	'--initialize --init-steps=dtI',
+	0,
+	[qr{^$}],
+	[
+		qr{dropping old tables},
+		qr{creating tables},
+		qr{generating data \(server-side\)},
+		qr{done in \d+\.\d\d s }
+	],
+	'pgbench --init-steps server-side UNNEST');
+
+# Check data state, after server-side data generation.
+check_data_state($node, 'server-side (unnest)');
+
+# Test server-side generation with UNNEST
+$node->pgbench(
+	'--initialize --init-steps=dtC',
+	0,
+	[qr{^$}],
+	[
+		qr{dropping old tables},
+		qr{creating tables},
+		qr{generating data \(client-side\)},
+		qr{done in \d+\.\d\d s }
+	],
+	'pgbench --init-steps client-side BINARY');
+
+# Check data state, after server-side data generation.
+check_data_state($node, 'client-side (binary)');
 
 # Run all builtin scripts, for a few transactions each
 $node->pgbench(

@@ -164,7 +164,7 @@ typedef struct socket_set
 #define ALL_INIT_STEPS "dtgCGiIvpf"	/* all possible steps */
 
 #define LOG_STEP_SECONDS	5	/* seconds between log messages */
-#define DEFAULT_NXACTS	10		/* default nxacts */
+#define DEFAULT_NXACTS		10	/* default nxacts */
 
 #define MIN_GAUSSIAN_PARAM		2.0 /* minimum parameter for gauss */
 
@@ -192,7 +192,7 @@ static int	scale = 1;
 /*
  * mode of data generation to use
  */
-static char	data_generation_type = '?';
+static char	data_generation_type = GEN_TYPE_COPY_ORIGINAL;
 
 /*
  * COPY FROM BINARY execution buffer
@@ -4985,26 +4985,26 @@ initCreateTables(PGconn *con)
 	static const struct ddlinfo DDLs[] = {
 		{
 			"pgbench_history",
-			"tid int,bid int,aid    int,delta int,mtime timestamp,filler char(22) default ''",
-			"tid int,bid int,aid bigint,delta int,mtime timestamp,filler char(22) default ''",
+			"tid int,bid int,aid    int,delta int,mtime timestamp,filler char(22) default '?'",
+			"tid int,bid int,aid bigint,delta int,mtime timestamp,filler char(22) default '?'",
 			0
 		},
 		{
 			"pgbench_tellers",
-			"tid int not null,bid int,tbalance int,filler char(84) default ''",
-			"tid int not null,bid int,tbalance int,filler char(84) default ''",
+			"tid int not null,bid int,tbalance int,filler char(84)",
+			"tid int not null,bid int,tbalance int,filler char(84)",
 			1
 		},
 		{
 			"pgbench_accounts",
-			"aid    int not null,bid int,abalance int,filler char(84) default ''",
-			"aid bigint not null,bid int,abalance int,filler char(84) default ''",
+			"aid    int not null,bid int,abalance int,filler char(84) default '?'",
+			"aid bigint not null,bid int,abalance int,filler char(84) default '?'",
 			1
 		},
 		{
 			"pgbench_branches",
-			"bid int not null,bbalance int,filler char(88) default ''",
-			"bid int not null,bbalance int,filler char(88) default ''",
+			"bid int not null,bbalance int,filler char(88)",
+			"bid int not null,bbalance int,filler char(88)",
 			1
 		}
 	};
@@ -7837,6 +7837,7 @@ main(int argc, char **argv)
 			}
 		}
 
+		checkInitSteps(initialize_steps);
 		runInitSteps(initialize_steps);
 		exit(0);
 	}
