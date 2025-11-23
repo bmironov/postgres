@@ -5201,7 +5201,7 @@ initGenerateDataClientSideText(PGconn *con)
 
 /*
  * Dumps binary buffer to file (purely for debugging)
- */
+ *
 static void
 dumpBufferToFile(char *filename)
 {
@@ -5226,6 +5226,7 @@ dumpBufferToFile(char *filename)
 
 	fclose(file_ptr);
 }
+ */
 
 /*
  * Save char data to buffer
@@ -5271,37 +5272,14 @@ addColumnCounter(int16_t n)
 
 /*
  * adds column with NULL value
- */
+ *
 static void
 addNullColumn()
 {
 	int32_t null = -1;
 	bufferData((void *) &null, sizeof(null));
 }
-
-/*
- * adds column with int8 value
  */
-static void
-addInt8Column(int8_t value)
-{
-	int8_t	data = value;
-	int32_t	size = sizeof(data);
-	bufferData((void *) &size, sizeof(size));
-	bufferData((void *) &data, sizeof(data));
-}
-
-/*
- * adds column with int16 value
- */
-static void
-addInt16Column(int16_t value)
-{
-	int16_t	data = value;
-	int32_t	size = sizeof(data);
-	bufferData((void *) &size, sizeof(size));
-	bufferData((void *) &data, sizeof(data));
-}
 
 /*
  * adds column with inti32 value
@@ -5329,7 +5307,7 @@ addInt64Column(int64_t value)
 
 /*
  * adds column with char value
- */
+ *
 static void
 addCharColumn(char *value)
 {
@@ -5337,6 +5315,7 @@ addCharColumn(char *value)
 	bufferData((void *) &size, sizeof(size));
 	bufferCharData(value, size);
 }
+ */
 
 /*
  * Starts communication with server for COPY FROM BINARY statement
