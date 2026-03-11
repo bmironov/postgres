@@ -223,14 +223,14 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
           <listitem>
            <para>
             Generate data and load it into the standard tables using client-side
-            generation. Data is generated in the <command>pgbench</command> client 
-            and then sent to the server. This uses the client/server bandwidth 
+            generation. Data is generated in the <command>pgbench</command> client
+            and then sent to the server. This uses the client/server bandwidth
             extensively through a <command>COPY</command>.
             <command>pgbench</command> uses the <option>FREEZE</option> option
             to load data into ordinary (non-partition) tables with version 14
             or later of <productname>PostgreSQL</productname> to speed up
-            subsequent <command>VACUUM</command>. Using <literal>g</literal> 
-            or <literal>c</literal> causes logging to print one message 
+            subsequent <command>VACUUM</command>. Using <literal>g</literal>
+            or <literal>c</literal> causes logging to print one message
             every 100,000 rows while generating data for all tables.
            </para>
            <para>
@@ -260,7 +260,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
             client and then data is actually generated in the server.
             No significant bandwidth is required for this variant, but
             the server will do more work.
-            Using <literal>G</literal> or <literal>U</literal> causes logging not to print 
+            Using <literal>G</literal> or <literal>U</literal> causes logging not to print
             any progress message while generating data.
            </para>
            <para>
@@ -285,7 +285,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
             transaction or in multiple transactions.
            </para>
            <para>
-            With <literal>S</literal> (single transaction), all data generation 
+            With <literal>S</literal> (single transaction), all data generation
             are executed within one transaction. This is the default
             behavior. Using a single transaction allows the use of the
             <option>FREEZE</option> option with client-side <command>COPY</command>.
